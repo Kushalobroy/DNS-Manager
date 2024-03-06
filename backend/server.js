@@ -9,7 +9,10 @@ const nodemailer = require('nodemailer');
 const { appendFile } = require('fs/promises');
 const app = express();
 const PORT = process.env.PORT || 5000;
-
+const DNSRecord = require('./models/DNSRecord');
+const multer = require('multer');
+const csvParser = require('csv-parser');
+const fs = require('fs');
 app.use(bodyParser.json());
 app.use(cors());
 
@@ -48,10 +51,10 @@ app.post('/api/register', async (req, res) => {
 
 // Login endpoint
 app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { email, password } = req.body;
 
   // Find the user in the database
-  const user = await User.findOne({ username });
+  const user = await User.findOne({ email });
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
@@ -154,6 +157,106 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
+// API for Upload CSV Or Json File
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    cb(null, file.originalname);
+  }
+});
+const upload = multer({ storage: storage });
+
+// Define route for file upload
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    // Check if file is CSV or JSON
+    const fileName = req.file.originalname;
+    if (fileName.endsWith('.csv')) {
+      // Process CSV file
+      fs.createReadStream(`uploads/${fileName}`)
+        .pipe(csvParser())
+        .on('data', async (row) => {
+          // Process each row and save DNS records
+          const domainName = row.domain; // Assuming 'domain' is a field in the CSV
+          // const domain = await Domain.findOne({ name: domainName });
+          if (domain) {
+            await Promise.all(
+              Object.entries(row)
+                .filter(([key]) => key !== 'domain')
+                .map(async ([key, value]) => {
+                  await DNSRecord.create({
+                    name: key,
+                    value: value,
+                    domain: domain._id
+                  });
+                })
+            );
+          }
+        })
+        .on('end', () => {
+          res.status(200).json({ message: 'CSV file uploaded and processed successfully' });
+        });
+    } else if (fileName.endsWith('.json')) {
+      // Process JSON file
+      const data = JSON.parse(fs.readFileSync(`uploads/${fileName}`, 'utf-8'));
+      // Process JSON data and save DNS records
+      // Implement logic according to your JSON structure
+      res.status(200).json({ message: 'JSON file uploaded and processed successfully' });
+    } else {
+      res.status(400).json({ error: 'Invalid file format. Only CSV and JSON files are allowed.' });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// API For Add DNS one by One
+
+app.post('/api/add', async (req, res) => {
+  try {
+    const { name, type, value, ttl } = req.body;
+    const newDomain = new DNSRecord({ name, type, value, ttl });
+    await newDomain.save();
+    res.status(201).json({ message: 'Domain added successfully', domain: newDomain });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// API For Getting all the domains
+
+app.get('/api/domains', async(req, res) =>{
+  try {
+    const dnsRecords = await DNSRecord.find();
+    res.status(200).json(dnsRecords);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// API For Delete
+app.delete('/api/delete/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if the DNS record exists
+    const dnsRecord = await DNSRecord.findById(id);
+    if (!dnsRecord) {
+      return res.status(404).json({ message: 'DNS record not found' });
+    }
+    // Delete the DNS record
+    await DNSRecord.findByIdAndDelete(id);
+    res.status(200).json({ message: 'DNS record deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
